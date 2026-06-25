@@ -1,0 +1,60 @@
+# Build and publish doze plugin modules. Plugins are pure-Go cross-compiles, so a
+# single runner builds every triple — no per-platform matrix. Each module is
+# published to its own rolling release (tag = module name), serving an index.yaml
+# + per-platform archives that doze fetches from:
+#   <repo>/releases/download/<module>/index.yaml
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: 'Module to build ("all" or a name like "postgres")'
+        required: false
+        default: all
+  push:
+    branches: [main]
+    paths: [modules.yaml, cmd/**, .github/workflows/**]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout doze-modules
+        uses: actions/checkout@v4
+
+      - name: Checkout doze (the plugin source) at the pinned ref
+        uses: actions/checkout@v4
+        with:
+          repository: NerdMeNot/doze
+          path: .doze-src
+          ref: ${{ github.event_name == 'workflow_dispatch' && '' || '' }}
+
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26' }
+
+      # doze_ref in modules.yaml selects the source revision the plugins build from.
+      - name: Check out the pinned doze ref
+        run: |
+          ref=$(grep '^doze_ref:' modules.yaml | awk '{print $2}')
+          git -C .doze-src fetch --depth 1 origin "$ref" && git -C .doze-src checkout FETCH_HEAD
+
+      - name: Build modules
+        run: |
+          go build -o /tmp/dzm ./cmd/dzm
+          /tmp/dzm --doze "$PWD/.doze-src" --out dist --module "${{ inputs.module || 'all' }}"
+
+      # Publish each module folder to its own rolling release. gh release upload
+      # --clobber merges new triples into the existing release cumulatively.
+      - name: Publish per-module releases
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          for dir in dist/*/; do
+            name=$(basename "$dir")
+            gh release view "$name" >/dev/null 2>&1 || \
+              gh release create "$name" --title "$name module" --notes "doze $name plugin module"
+            gh release upload "$name" "$dir"/* --clobber
+          done
