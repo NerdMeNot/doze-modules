@@ -14,7 +14,9 @@ on:
         default: all
   push:
     branches: [main]
-    paths: [modules.yaml, cmd/**, .github/workflows/**]
+    # Rebuild on a module-source change, a manifest bump, an SDK re-pin (go.mod),
+    # or tooling/workflow changes.
+    paths: [modules.yaml, modules/**, cmd/**, go.mod, go.sum, .github/workflows/**]
 
 permissions:
   contents: write
