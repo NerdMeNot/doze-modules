@@ -1,0 +1,188 @@
+// Package postgres implements the doze engine.Driver for PostgreSQL: resolving
+// toolchains from the mirror, provisioning a data directory (initdb + tuned
+// config), spawning the backend on a private unix socket, converging declared
+// structure, and the wire-protocol proxy filter (startup/TLS/cancel).
+package postgres
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/nerdmenot/doze-sdk/engine"
+)
+
+// nominalPort names each backend's unix socket file (.s.PGSQL.<port>). No TCP
+// port is bound on the backend, so every instance can share this number.
+const nominalPort = 5432
+
+const bootTimeout = 30 * time.Second
+
+// envBinDir overrides toolchain resolution for every postgres instance.
+const envBinDir = "DOZE_POSTGRES_BINDIR"
+
+// Driver is the PostgreSQL engine driver.
+type Driver struct{}
+
+// Type implements engine.Driver.
+func (Driver) Type() string { return "postgres" }
+
+// NominalPort returns the socket-naming port the runtime should assign.
+func (Driver) NominalPort() int { return nominalPort }
+
+// Resolve implements engine.Driver.
+func (Driver) Resolve(ctx context.Context, spec engine.VersionSpec, plat engine.Platform, lk engine.Locker, fetch engine.Fetcher) (engine.Toolchain, error) {
+	if dir := os.Getenv(envBinDir); dir != "" {
+		// Label the override with the declared spec so templating still has a
+		// stable key (the bindir is assumed to match the declared version).
+		full := spec.String()
+		if spec.IsExact() {
+			full = normalizeExact(full)
+		}
+		return engine.Toolchain{Engine: "postgres", BinDir: dir, Full: full}, nil
+	}
+
+	full, expectedSHA := "", ""
+	if pin, ok := lk.Get("postgres", spec, plat); ok && pin.Resolved != "" {
+		full = pin.Resolved
+		expectedSHA = pin.Hashes[plat.Triple]
+	} else if spec.IsExact() {
+		full = normalizeExact(spec.String())
+	} else {
+		v, err := fetch.ResolveMajor("postgres", spec.String())
+		if err != nil {
+			return engine.Toolchain{}, err
+		}
+		full = v
+	}
+
+	binDir, digest, err := fetch.Ensure(ctx, "postgres", full, plat, expectedSHA)
+	if err != nil {
+		return engine.Toolchain{}, err
+	}
+	hashes := map[string]string{}
+	if digest != "" {
+		hashes[plat.Triple] = digest
+	}
+	lk.Record("postgres", spec, plat, engine.Pin{Resolved: full, Source: "mirror", Hashes: hashes})
+	return engine.Toolchain{Engine: "postgres", Full: full, BinDir: binDir}, nil
+}
+
+// normalizeExact maps a real two-part Postgres version (16.14) to the three-part
+// archive version (16.14.0); already three-part values pass through.
+func normalizeExact(v string) string {
+	if strings.Count(v, ".") == 1 {
+		return v + ".0"
+	}
+	return v
+}
+
+// Provision implements engine.Driver.
+func (Driver) Provision(ctx context.Context, inst engine.Instance, tc engine.Toolchain) error {
+	cfg, err := pgConfig(inst)
+	if err != nil {
+		return err
+	}
+	return provision(ctx, inst, tc, cfg)
+}
+
+// Provisioned implements engine.Driver.
+func (Driver) Provisioned(dataDir string) bool { return provisioned(dataDir) }
+
+// Plan implements engine.Spawner: it returns a one-spec SpawnPlan that core's
+// supervisor runs and reaps, gated on pg_isready. It does the same pre-spawn prep
+// Spawn did (socket dir + stale-lock clearing) so the declarative path is
+// behaviour-identical; Spawn/WaitReady remain for the in-tree LegacySpawner path.
+func (Driver) Plan(_ context.Context, inst engine.Instance, tc engine.Toolchain) (engine.SpawnPlan, error) {
+	if err := os.MkdirAll(inst.SocketDir, 0o700); err != nil {
+		return engine.SpawnPlan{}, fmt.Errorf("creating socket dir: %w", err)
+	}
+	if err := clearStaleLock(inst); err != nil {
+		return engine.SpawnPlan{}, err
+	}
+	spec := engine.SpawnSpec{
+		Name: "postgres",
+		Bin:  tc.Path("postgres"),
+		Args: []string{
+			"-D", inst.DataDir,
+			"-k", inst.SocketDir,
+			"-p", strconv.Itoa(inst.Port),
+			"-c", "listen_addresses=", // unix socket only
+		},
+		Ready: &engine.Ready{
+			Kind:    "exec",
+			Target:  fmt.Sprintf("%s -h %s -p %d -d postgres", tc.Path("pg_isready"), inst.SocketDir, inst.Port),
+			Timeout: bootTimeout,
+		},
+	}
+	return engine.SpawnPlan{Specs: []engine.SpawnSpec{spec}}, nil
+}
+
+// BackendSocket implements engine.Driver.
+func (Driver) BackendSocket(socketDir string, port int) string {
+	return filepath.Join(socketDir, fmt.Sprintf(".s.PGSQL.%d", port))
+}
+
+// BackendURL implements engine.BackendProvider: a libpq URL another local
+// process (e.g. FerretDB) uses to connect directly to this instance's backend
+// over its unix socket. The database is the instance name (created by converge).
+func (Driver) BackendURL(inst engine.Instance) string {
+	return fmt.Sprintf("postgres://postgres@/%s?host=%s", inst.Name, inst.SocketDir)
+}
+
+// ConnString implements engine.Driver.
+func (Driver) ConnString(inst engine.Instance, ep engine.Endpoint) (string, string) {
+	if ep.TCPAddr != "" {
+		return "DATABASE_URL", fmt.Sprintf("postgres://postgres@%s/%s?sslmode=disable", ep.TCPAddr, inst.Name)
+	}
+	return "DATABASE_URL", fmt.Sprintf("postgres://postgres@/%s?host=%s", inst.Name, filepath.Dir(ep.UnixSocket))
+}
+
+// pgConfig extracts the Postgres config from an instance, defaulting if absent.
+func pgConfig(inst engine.Instance) (*Config, error) {
+	if inst.Spec == nil {
+		return &Config{SharedBuffers: defaultSharedBuffers, MaxConnections: defaultMaxConnections}, nil
+	}
+	cfg, ok := inst.Spec.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("instance %q: unexpected config type %T", inst.Name, inst.Spec)
+	}
+	return cfg, nil
+}
+
+// clearStaleLock refuses to double-start a running backend and clears a stale
+// postmaster.pid (and orphaned socket) left by a crash.
+func clearStaleLock(inst engine.Instance) error {
+	lockPath := filepath.Join(inst.DataDir, "postmaster.pid")
+	raw, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	lines := strings.SplitN(string(raw), "\n", 2)
+	if pid, convErr := strconv.Atoi(strings.TrimSpace(lines[0])); convErr == nil && pid > 0 && processAlive(pid) {
+		return fmt.Errorf("instance %q appears to already be running (pid %d); remove %s if you are sure it is not", inst.Name, pid, lockPath)
+	}
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing stale lock: %w", err)
+	}
+	_ = os.Remove(filepath.Join(inst.SocketDir, fmt.Sprintf(".s.PGSQL.%d", inst.Port)))
+	return nil
+}
+
+// processAlive reports whether pid is a live process (signal 0 probe) — used to
+// detect a stale postmaster.pid from a crashed instance.
+func processAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}
