@@ -16,8 +16,11 @@ doze_ref: main
 #   aarch64-apple-darwin, x86_64-apple-darwin,
 #   aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu
 
+# Migration in progress: valkey's source now lives here (modules/<name>/); the
+# others are still built from a doze checkout until they migrate (Phase 3), after
+# which dzm builds every module from this repo (Phase 5).
 modules:
-  valkey:     { path: ./engine/valkey/plugin,     version: "0.1.0" }
+  valkey:     { path: ./modules/valkey/plugin,    version: "0.1.0" }
   kvrocks:    { path: ./engine/kvrocks/plugin,    version: "0.1.0" }
   postgres:   { path: ./engine/postgres/plugin,   version: "0.1.0" }
   documentdb: { path: ./engine/documentdb/plugin, version: "0.1.0" }
