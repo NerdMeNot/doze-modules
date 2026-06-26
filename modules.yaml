@@ -1,30 +1,28 @@
 # doze plugin modules.
 #
 # Each module is an out-of-process doze engine plugin — a pure-Go binary built
-# from a package in the doze repo and published as its own rolling release under
+# from its source in this repo (modules/<name>/) and published as its own rolling
+# release under
 #   https://github.com/NerdMeNot/doze-modules/releases/download/<name>/
 # with an index.yaml + per-platform archives. doze fetches a module by engine
 # type, verifies its checksum, caches it under ~/.doze/modules, and runs it.
 #
-# Authoring/upgrading a module is a PR editing this file (bump version / add an
-# entry); CI cross-compiles the four supported triples and publishes cumulatively.
-
-# The doze source the plugins are built from (a tag, branch, or commit).
-doze_ref: main
-
-# triple list is fixed (mac+linux, no 32-bit, no intel-mac per project policy):
+# Authoring/upgrading a module is a PR editing this file (bump version) + the
+# source under modules/<name>/; CI cross-compiles the four supported triples and
+# publishes cumulatively.
+#
+# triples (fixed: mac+linux, 64-bit, no intel-mac per project policy):
 #   aarch64-apple-darwin, x86_64-apple-darwin,
 #   aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu
+#
+# NOTE: `process` is NOT a module — it is the supervision primitive compiled into
+# doze core, so it never appears here.
 
-# Migration in progress: valkey's source now lives here (modules/<name>/); the
-# others are still built from a doze checkout until they migrate (Phase 3), after
-# which dzm builds every module from this repo (Phase 5).
 modules:
-  valkey:     { path: ./modules/valkey/plugin,    version: "0.1.0" }
-  kvrocks:    { path: ./modules/kvrocks/plugin,   version: "0.1.0" }
-  postgres:   { path: ./modules/postgres/plugin,  version: "0.1.0" }
+  valkey:     { path: ./modules/valkey/plugin,     version: "0.1.0" }
+  kvrocks:    { path: ./modules/kvrocks/plugin,    version: "0.1.0" }
+  postgres:   { path: ./modules/postgres/plugin,   version: "0.1.0" }
   documentdb: { path: ./modules/documentdb/plugin, version: "0.1.0" }
-  s3:         { path: ./modules/s3/plugin,        version: "0.1.0" }
-  sqs:        { path: ./modules/sqs/plugin,       version: "0.1.0" }
-  sns:        { path: ./modules/sns/plugin,       version: "0.1.0" }
-  process:    { path: ./engine/process/plugin,    version: "0.1.0" }
+  s3:         { path: ./modules/s3/plugin,         version: "0.1.0" }
+  sqs:        { path: ./modules/sqs/plugin,        version: "0.1.0" }
+  sns:        { path: ./modules/sns/plugin,        version: "0.1.0" }

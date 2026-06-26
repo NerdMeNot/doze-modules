@@ -62,7 +62,7 @@ type artifact struct {
 }
 
 func main() {
-	doze := flag.String("doze", "../doze", "path to the doze source checkout")
+	repo := flag.String("repo", ".", "module source root (this doze-modules repo)")
 	out := flag.String("out", "dist", "output directory (release layout)")
 	only := flag.String("module", "all", "module name to build, or \"all\"")
 	triplesCSV := flag.String("triples", "", "comma-separated triples (default: all)")
@@ -87,13 +87,13 @@ func main() {
 		m := mf.Modules[name]
 		fmt.Printf("== %s %s ==\n", name, m.Version)
 		for _, triple := range triples {
-			check(buildOne(*doze, *out, name, m, triple))
+			check(buildOne(*repo, *out, name, m, triple))
 		}
 	}
 	fmt.Println("done.")
 }
 
-func buildOne(doze, out, name string, m moduleEntry, triple string) error {
+func buildOne(repo, out, name string, m moduleEntry, triple string) error {
 	plat, ok := allTriples[triple]
 	if !ok {
 		return fmt.Errorf("unknown triple %q", triple)
@@ -117,7 +117,7 @@ func buildOne(doze, out, name string, m moduleEntry, triple string) error {
 	}
 	fmt.Printf("  build %s\n", triple)
 	cmd := exec.Command("go", "build", "-trimpath", "-o", binPath, m.Path)
-	cmd.Dir = doze
+	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+plat[0], "GOARCH="+plat[1])
 	if outb, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("building %s for %s: %w\n%s", name, triple, err, outb)
