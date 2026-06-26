@@ -1,0 +1,16 @@
+// Command kvrocks-plugin runs the kvrocks engine as an out-of-process doze module.
+// The engine logic lives in this repo (../, package kvrocks); doze core fetches and
+// runs this binary over the engine plugin protocol.
+package main
+
+import (
+	"encoding/gob"
+
+	"github.com/NerdMeNot/doze-modules/modules/kvrocks"
+	dozeplugin "github.com/nerdmenot/doze-sdk/plugin"
+)
+
+func main() {
+	gob.Register(&kvrocks.Config{})
+	dozeplugin.Serve(kvrocks.Driver{})
+}

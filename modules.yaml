@@ -21,7 +21,7 @@ doze_ref: main
 # which dzm builds every module from this repo (Phase 5).
 modules:
   valkey:     { path: ./modules/valkey/plugin,    version: "0.1.0" }
-  kvrocks:    { path: ./engine/kvrocks/plugin,    version: "0.1.0" }
+  kvrocks:    { path: ./modules/kvrocks/plugin,   version: "0.1.0" }
   postgres:   { path: ./engine/postgres/plugin,   version: "0.1.0" }
   documentdb: { path: ./engine/documentdb/plugin, version: "0.1.0" }
   s3:         { path: ./engine/s3/plugin,         version: "0.1.0" }
