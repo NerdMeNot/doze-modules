@@ -95,17 +95,6 @@ func (d BaseDriver) ConnString(_ engine.Instance, ep engine.Endpoint) (string, s
 	return d.EndpointEnv, "http://" + clientHost(ep)
 }
 
-// Env implements engine.EnvProvider: AWS SDKs need dummy credentials and a
-// region in addition to the endpoint URL (the endpoint comes from ConnString).
-func (d BaseDriver) Env(_ engine.Instance, _ engine.Endpoint) map[string]string {
-	return map[string]string{
-		"AWS_ACCESS_KEY_ID":     AccessKeyID,
-		"AWS_SECRET_ACCESS_KEY": SecretAccessKey,
-		"AWS_REGION":            Region,
-		"AWS_DEFAULT_REGION":    Region,
-	}
-}
-
 // clientHost returns the host:port an SDK uses to reach this instance. The AWS
 // services need a TCP endpoint (an http URL); a unix-only endpoint can't be
 // expressed as one, so fall back to localhost as a best effort.
