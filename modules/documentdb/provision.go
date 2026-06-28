@@ -144,10 +144,18 @@ func initdb(ctx context.Context, inst engine.Instance, tc engine.Toolchain, pgDa
 //   - cron.database_name: pg_cron runs its scheduler against this database, which
 //     is also where we create the extension.
 //   - listen_addresses=127.0.0.1: the extension self-connects over loopback TCP.
-//   - max_worker_processes: headroom for pg_cron + the documentdb bg-worker leader
-//     + PG18's io workers + parallel query, above the default 8. (Note: the real
-//     idle-CPU fix is taming the every-2s build_index cron schedule in Plan's hook;
-//     this just gives the workers room.)
+//   - cron.use_background_workers=on: THE idle-CPU fix. By default pg_cron runs a
+//     job by opening a libpq connection to cron.host ('localhost'); that connection
+//     defaults to the OS user (doze runs Postgres as e.g. "srini", which is not a
+//     role — the cluster bootstraps "postgres"), and 'localhost' fights the IPv4-only
+//     listen_addresses. So every job's connection failed ("job startup timeout") and
+//     the launcher busy-spun retrying, pinning a CPU at idle. In background-worker
+//     mode pg_cron runs jobs in dynamic workers that connect INTERNALLY as the job's
+//     role — no libpq, no OS-user default, no localhost — so the jobs actually
+//     succeed and the launcher idles. cron.host=127.0.0.1 hardens the (now-unused)
+//     libpq path too.
+//   - max_worker_processes: bgworker-mode jobs each take a worker; this gives pg_cron
+//     room above the default 8 (io workers + the documentdb leader + launchers).
 //
 // The fsync/durability settings mirror doze's light dev profile.
 func writeConf(pgData string) error {
@@ -155,6 +163,8 @@ func writeConf(pgData string) error {
 listen_addresses = '127.0.0.1'
 shared_preload_libraries = 'pg_cron,pg_documentdb_core,pg_documentdb'
 cron.database_name = 'postgres'
+cron.use_background_workers = on
+cron.host = '127.0.0.1'
 max_worker_processes = 32
 fsync = off
 synchronous_commit = off

@@ -165,26 +165,13 @@ func (Driver) Plan(_ context.Context, inst engine.Instance, tc engine.Toolchain)
 			Target: fmt.Sprintf("%s -h %s -p %d -d postgres", tc.Path("pg_isready"), pgSock, port),
 		},
 		// Install the DocumentDB extension chain once Postgres is ready, before
-		// FerretDB connects — then tame its pg_cron maintenance schedule.
-		Hooks: []string{
-			fmt.Sprintf(
-				`%s -h %s -p %d -U postgres -d postgres -v ON_ERROR_STOP=1 -X -q -c "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"`,
-				tc.Path("psql"), pgSock, port,
-			),
-			// DocumentDB schedules pg_cron maintenance jobs (build_index_concurrently
-			// every 2s, plus per-minute delete_expired_rows/cursor cleanup). In this
-			// single-node dev cluster pg_cron cannot start their dynamic background
-			// workers — every run hits "job startup timeout" — so the launcher busy-
-			// spins retrying and pins a CPU at idle (≈99% at the 2s cadence). The jobs
-			// deliver nothing while failing, and createIndex / normal Mongo ops run
-			// synchronously and are unaffected — so disable the maintenance jobs
-			// outright. Idempotent; runs on every boot (the cloned template re-enables
-			// them). Re-enable upstream once dynamic bg-worker startup is sorted out.
-			fmt.Sprintf(
-				`%s -h %s -p %d -U postgres -d postgres -X -q -c "UPDATE cron.job SET active = false WHERE command LIKE '%%documentdb_api_internal%%';"`,
-				tc.Path("psql"), pgSock, port,
-			),
-		},
+		// FerretDB connects. The extension's pg_cron maintenance jobs run fine now
+		// that doze.conf sets cron.use_background_workers=on (see writeConf) — no
+		// schedule surgery needed.
+		Hooks: []string{fmt.Sprintf(
+			`%s -h %s -p %d -U postgres -d postgres -v ON_ERROR_STOP=1 -X -q -c "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"`,
+			tc.Path("psql"), pgSock, port,
+		)},
 	}
 	ferretdb := engine.SpawnSpec{
 		Name:  "ferretdb",
