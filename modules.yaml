@@ -25,4 +25,4 @@ modules:
   documentdb: { path: ./modules/documentdb/plugin, version: "0.1.0" }
   s3:         { path: ./modules/s3/plugin,         version: "0.1.4" }
   sqs:        { path: ./modules/sqs/plugin,        version: "0.1.4" }
-  sns:        { path: ./modules/sns/plugin,        version: "0.1.4" }
+  sns:        { path: ./modules/sns/plugin,        version: "0.1.5" }
