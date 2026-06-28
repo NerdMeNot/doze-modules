@@ -34,12 +34,13 @@ func (Driver) Attributes(inst engine.Instance, _ engine.Endpoint) map[string]cty
 	if !ok || cfg == nil {
 		return nil
 	}
+	primary, dlq := cfg.resolve(inst.Name)
 	out := map[string]cty.Value{
-		"name": cty.StringVal(cfg.Queue.Name),
-		"arn":  cty.StringVal(awslocal.ARN("sqs", cfg.Queue.Name)),
+		"name": cty.StringVal(primary.Name),
+		"arn":  cty.StringVal(awslocal.ARN("sqs", primary.Name)),
 	}
-	if cfg.DeadLetter != nil {
-		out["dlq"] = cty.StringVal(cfg.DeadLetter.Name)
+	if dlq != nil {
+		out["dlq"] = cty.StringVal(dlq.Name)
 	}
 	return out
 }

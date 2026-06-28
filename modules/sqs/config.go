@@ -14,24 +14,55 @@ import (
 	"github.com/doze-dev/doze-sdk/engine"
 )
 
-// Config is the decoded `sqs "<name>" { … }` block. One block is ONE queue — the
-// block name is the queue name — with an optional dead-letter companion.
+// Config is the decoded `sqs "<name>" { … }` block. One block is ONE queue; the
+// queue name is the *instance* name (resolved at runtime, since DecodeConfig only
+// sees the base dir — see resolve). A `dead_letter { }` block adds a companion DLQ.
 type Config struct {
-	Queue      QueueDecl  // the primary queue
-	DeadLetter *QueueDecl // optional companion DLQ (nil if none)
+	FIFO       bool              // queue name gets the `.fifo` suffix SQS requires
+	Attrs      map[string]string // base SQS attributes (not the name-dependent redrive policy)
+	DeadLetter *DLQConfig        // optional companion DLQ (nil if none)
 }
 
-// QueueDecl is a queue plus the SQS attribute map to create it with.
+// DLQConfig is the decoded `dead_letter { }` block.
+type DLQConfig struct {
+	MaxReceiveCount int
+	Attrs           map[string]string
+}
+
+// QueueDecl is a concrete queue (name resolved) plus the attribute map to create it.
 type QueueDecl struct {
 	Name  string
 	Attrs map[string]string
 }
 
-// DecodeConfig implements engine.ConfigDecoder. The block label (name) is the
-// queue name; `fifo = true` makes it a FIFO queue (name suffixed `.fifo`, as SQS
-// requires); a `dead_letter { }` block adds a companion `<name>-dlq` and wires the
-// redrive policy.
-func (Driver) DecodeConfig(body hcl.Body, ctx *hcl.EvalContext, name string) (engine.EngineConfig, error) {
+// resolve turns the config into concrete queues for a given instance name: the
+// primary queue (with the redrive policy wired to the DLQ's ARN) and, if declared,
+// the dead-letter companion. FIFO queues get the `.fifo` suffix SQS requires.
+func (c *Config) resolve(instName string) (primary QueueDecl, dlq *QueueDecl) {
+	attrs := map[string]string{}
+	for k, v := range c.Attrs {
+		attrs[k] = v
+	}
+	if c.DeadLetter != nil {
+		dlqName := fifoName(instName+"-dlq", c.FIFO)
+		dlq = &QueueDecl{Name: dlqName, Attrs: c.DeadLetter.Attrs}
+		mrc := c.DeadLetter.MaxReceiveCount
+		if mrc <= 0 {
+			mrc = 5
+		}
+		policy, _ := json.Marshal(map[string]string{
+			"deadLetterTargetArn": awslocal.ARN("sqs", dlqName),
+			"maxReceiveCount":     strconv.Itoa(mrc),
+		})
+		attrs["RedrivePolicy"] = string(policy)
+	}
+	return QueueDecl{Name: fifoName(instName, c.FIFO), Attrs: attrs}, dlq
+}
+
+// DecodeConfig implements engine.ConfigDecoder. It decodes the queue's options;
+// the queue name is the instance name, applied at runtime via resolve. `fifo =
+// true` makes it a FIFO queue; a `dead_letter { }` block adds a companion DLQ.
+func (Driver) DecodeConfig(body hcl.Body, ctx *hcl.EvalContext, _ string) (engine.EngineConfig, error) {
 	var raw struct {
 		FIFO              bool   `hcl:"fifo,optional"`
 		ContentBasedDedup bool   `hcl:"content_based_dedup,optional"`
@@ -47,9 +78,6 @@ func (Driver) DecodeConfig(body hcl.Body, ctx *hcl.EvalContext, name string) (en
 	}
 	if d := gohcl.DecodeBody(body, ctx, &raw); d.HasErrors() {
 		return nil, fmt.Errorf("%s", d.Error())
-	}
-	if name == "" {
-		return nil, fmt.Errorf("sqs queue needs a name")
 	}
 
 	attrs := map[string]string{}
@@ -75,8 +103,7 @@ func (Driver) DecodeConfig(body hcl.Body, ctx *hcl.EvalContext, name string) (en
 		attrs["MaximumMessageSize"] = strconv.Itoa(raw.MaxMessageSize)
 	}
 
-	c := &Config{Queue: QueueDecl{Name: fifoName(name, raw.FIFO), Attrs: attrs}}
-
+	c := &Config{FIFO: raw.FIFO, Attrs: attrs}
 	if raw.DeadLetter != nil {
 		dlqAttrs := map[string]string{}
 		if raw.FIFO { // a FIFO queue's DLQ must also be FIFO
@@ -85,17 +112,7 @@ func (Driver) DecodeConfig(body hcl.Body, ctx *hcl.EvalContext, name string) (en
 		if err := setSeconds(dlqAttrs, "MessageRetentionPeriod", raw.DeadLetter.Retention); err != nil {
 			return nil, err
 		}
-		c.DeadLetter = &QueueDecl{Name: fifoName(name+"-dlq", raw.FIFO), Attrs: dlqAttrs}
-
-		mrc := raw.DeadLetter.MaxReceiveCount
-		if mrc <= 0 {
-			mrc = 5
-		}
-		policy, _ := json.Marshal(map[string]string{
-			"deadLetterTargetArn": awslocal.ARN("sqs", c.DeadLetter.Name),
-			"maxReceiveCount":     strconv.Itoa(mrc),
-		})
-		c.Queue.Attrs["RedrivePolicy"] = string(policy)
+		c.DeadLetter = &DLQConfig{MaxReceiveCount: raw.DeadLetter.MaxReceiveCount, Attrs: dlqAttrs}
 	}
 	return c, nil
 }

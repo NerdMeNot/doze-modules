@@ -21,14 +21,15 @@ func (Driver) Converge(ctx context.Context, inst engine.Instance, _ engine.Toolc
 		return nil
 	}
 	client := awslocal.UnixHTTPClient(ep.Backend)
+	primary, dlq := cfg.resolve(inst.Name)
 	// Create the dead-letter queue first so the primary's redrive target exists.
-	if cfg.DeadLetter != nil {
-		if err := createQueue(ctx, client, *cfg.DeadLetter); err != nil {
-			return fmt.Errorf("dead-letter queue %q: %w", cfg.DeadLetter.Name, err)
+	if dlq != nil {
+		if err := createQueue(ctx, client, *dlq); err != nil {
+			return fmt.Errorf("dead-letter queue %q: %w", dlq.Name, err)
 		}
 	}
-	if err := createQueue(ctx, client, cfg.Queue); err != nil {
-		return fmt.Errorf("queue %q: %w", cfg.Queue.Name, err)
+	if err := createQueue(ctx, client, primary); err != nil {
+		return fmt.Errorf("queue %q: %w", primary.Name, err)
 	}
 	return nil
 }

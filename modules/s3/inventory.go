@@ -15,7 +15,7 @@ func (Driver) Objects(inst engine.Instance) []engine.Object {
 	if !ok || cfg == nil {
 		return nil
 	}
-	return []engine.Object{{Kind: "bucket", Name: cfg.Bucket.Name, Hash: engine.HashOf(cfg.Bucket)}}
+	return []engine.Object{{Kind: "bucket", Name: inst.Name, Hash: engine.HashOf(*cfg)}}
 }
 
 // Prune implements engine.Pruner: delete buckets no longer declared.

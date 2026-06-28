@@ -70,9 +70,10 @@ func (Driver) Resources(ctx context.Context, inst engine.Instance, ep engine.End
 		}
 		return engine.Resource{Kind: "queue", Name: q.Name, Status: queueStatus(r.Attributes), Info: info}
 	}
-	out := []engine.Resource{res(cfg.Queue, false)}
-	if cfg.DeadLetter != nil {
-		out = append(out, res(*cfg.DeadLetter, true))
+	primary, dlq := cfg.resolve(inst.Name)
+	out := []engine.Resource{res(primary, false)}
+	if dlq != nil {
+		out = append(out, res(*dlq, true))
 	}
 	return out, nil
 }
@@ -83,7 +84,7 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 	switch action {
 	case "redrive":
 		cfg, _ := inst.Spec.(*Config)
-		return redrive(ctx, client, resource, cfg)
+		return redrive(ctx, client, cfg, inst.Name)
 	case "purge":
 		if err := sqsCall(ctx, client, "PurgeQueue", map[string]any{"QueueName": resource}, nil); err != nil {
 			return "", err
@@ -188,11 +189,12 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 // StartMessageMoveTask; here it composes ReceiveMessage + SendMessage +
 // DeleteMessage so the server stays a standard SQS endpoint. MessageGroupId is
 // forwarded so a FIFO source keeps ordering.
-func redrive(ctx context.Context, c *http.Client, _ string, cfg *Config) (string, error) {
+func redrive(ctx context.Context, c *http.Client, cfg *Config, instName string) (string, error) {
 	if cfg == nil || cfg.DeadLetter == nil {
 		return "", fmt.Errorf("this queue has no dead-letter queue to redrive from")
 	}
-	dlq, source := cfg.DeadLetter.Name, cfg.Queue.Name
+	primary, dlqDecl := cfg.resolve(instName)
+	dlq, source := dlqDecl.Name, primary.Name
 
 	moved := 0
 	for moved < 100_000 { // safety cap against an unexpectedly self-refilling queue

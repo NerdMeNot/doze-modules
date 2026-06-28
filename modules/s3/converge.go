@@ -20,14 +20,14 @@ func (Driver) Converge(ctx context.Context, inst engine.Instance, _ engine.Toolc
 		return nil
 	}
 	client := awslocal.UnixHTTPClient(ep.Backend)
-	b := cfg.Bucket
-	if err := createBucket(ctx, client, b.Name); err != nil {
-		return fmt.Errorf("bucket %q: %w", b.Name, err)
+	name := inst.Name // the bucket name is the instance name
+	if err := createBucket(ctx, client, name); err != nil {
+		return fmt.Errorf("bucket %q: %w", name, err)
 	}
-	if b.Versioning {
-		if err := enableVersioning(ctx, client, b.Name); err != nil {
+	if cfg.Versioning {
+		if err := enableVersioning(ctx, client, name); err != nil {
 			// The bolt backend does not support versioning; warn, don't fail.
-			Logf("warning: s3 %q: could not enable versioning on %q (backend limitation): %v", inst.Name, b.Name, err)
+			Logf("warning: s3 %q: could not enable versioning (backend limitation): %v", name, err)
 		}
 	}
 	return nil

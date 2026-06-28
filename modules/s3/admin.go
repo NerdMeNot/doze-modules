@@ -44,8 +44,8 @@ func (Driver) Resources(ctx context.Context, inst engine.Instance, ep engine.End
 		return nil, nil
 	}
 	client := awslocal.UnixHTTPClient(ep.Backend)
-	b := cfg.Bucket
-	objs, _ := listObjects(ctx, client, b.Name)
+	name := inst.Name // the bucket name is the instance name
+	objs, _ := listObjects(ctx, client, name)
 	var total int64
 	for _, o := range objs {
 		total += o.Size
@@ -55,10 +55,10 @@ func (Driver) Resources(ctx context.Context, inst engine.Instance, ep engine.End
 		status += " · " + humanSize(total)
 	}
 	var info map[string]string
-	if b.Versioning {
+	if cfg.Versioning {
 		info = map[string]string{"versioning": "declared (unsupported by backend)"}
 	}
-	return []engine.Resource{{Kind: "bucket", Name: b.Name, Status: status, Info: info}}, nil
+	return []engine.Resource{{Kind: "bucket", Name: name, Status: status, Info: info}}, nil
 }
 
 // Run performs an S3 data action and returns a human result line.

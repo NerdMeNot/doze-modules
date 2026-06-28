@@ -43,9 +43,9 @@ func (Driver) Resources(ctx context.Context, inst engine.Instance, ep engine.End
 		return nil, nil
 	}
 	client := awslocal.UnixHTTPClient(ep.Backend)
-	subs, _ := listSubs(ctx, client, cfg.Topic)
+	subs, _ := listSubs(ctx, client, inst.Name)
 	return []engine.Resource{{
-		Kind: "topic", Name: cfg.Topic, Status: fmt.Sprintf("%d sub(s)", len(subs)),
+		Kind: "topic", Name: inst.Name, Status: fmt.Sprintf("%d sub(s)", len(subs)),
 	}}, nil
 }
 

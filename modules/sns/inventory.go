@@ -18,7 +18,7 @@ func (Driver) Objects(inst engine.Instance) []engine.Object {
 	if !ok || cfg == nil {
 		return nil
 	}
-	return []engine.Object{{Kind: "topic", Name: cfg.Topic, Hash: engine.HashOf(cfg.Topic)}}
+	return []engine.Object{{Kind: "topic", Name: inst.Name, Hash: engine.HashOf(inst.Name)}}
 }
 
 // Prune implements engine.Pruner: delete topics no longer declared.

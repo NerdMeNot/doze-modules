@@ -19,11 +19,12 @@ func (Driver) Objects(inst engine.Instance) []engine.Object {
 	if !ok || cfg == nil {
 		return nil
 	}
+	primary, dlq := cfg.resolve(inst.Name)
 	var objs []engine.Object
-	if cfg.DeadLetter != nil {
-		objs = append(objs, engine.Object{Kind: "queue", Name: cfg.DeadLetter.Name, Hash: engine.HashOf(*cfg.DeadLetter)})
+	if dlq != nil {
+		objs = append(objs, engine.Object{Kind: "queue", Name: dlq.Name, Hash: engine.HashOf(*dlq)})
 	}
-	objs = append(objs, engine.Object{Kind: "queue", Name: cfg.Queue.Name, Hash: engine.HashOf(cfg.Queue)})
+	objs = append(objs, engine.Object{Kind: "queue", Name: primary.Name, Hash: engine.HashOf(primary)})
 	return objs
 }
 

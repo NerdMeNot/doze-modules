@@ -20,13 +20,14 @@ func (Driver) Converge(ctx context.Context, inst engine.Instance, _ engine.Toolc
 		return nil
 	}
 	client := awslocal.UnixHTTPClient(ep.Backend)
-	if err := snsPost(ctx, client, url.Values{"Action": {"CreateTopic"}, "Name": {cfg.Topic}}); err != nil {
-		return fmt.Errorf("topic %q: %w", cfg.Topic, err)
+	topic := inst.Name // the topic name is the instance name
+	if err := snsPost(ctx, client, url.Values{"Action": {"CreateTopic"}, "Name": {topic}}); err != nil {
+		return fmt.Errorf("topic %q: %w", topic, err)
 	}
 	for _, sub := range cfg.Subs {
 		form := url.Values{
 			"Action":                {"Subscribe"},
-			"TopicArn":              {awslocal.ARN("sns", cfg.Topic)},
+			"TopicArn":              {awslocal.ARN("sns", topic)},
 			"Protocol":              {sub.Protocol},
 			"Endpoint":              {subscriptionEndpoint(sub)},
 			"ReturnSubscriptionArn": {"true"},
@@ -44,7 +45,7 @@ func (Driver) Converge(ctx context.Context, inst engine.Instance, _ engine.Toolc
 			add("FilterPolicy", sub.FilterPolicy)
 		}
 		if err := snsPost(ctx, client, form); err != nil {
-			return fmt.Errorf("subscribe %q -> %s: %w", cfg.Topic, sub.Endpoint, err)
+			return fmt.Errorf("subscribe %q -> %s: %w", topic, sub.Endpoint, err)
 		}
 	}
 	return nil
