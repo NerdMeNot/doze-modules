@@ -7,12 +7,26 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/doze-dev/doze-modules/awslocal"
 	"github.com/doze-dev/doze-sdk/engine"
 )
+
+// richPrefix marks an Admin input as a structured (JSON) payload (the dash
+// composer / inline parser prepend it); a plain string is just the body. Kept in
+// sync with the TUI's console richPrefix.
+const richPrefix = "\x01"
+
+// sendPayload is the structured form of a send command.
+type sendPayload struct {
+	Body       string            `json:"body"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	Group      string            `json:"group,omitempty"` // FIFO MessageGroupId
+	Dedup      string            `json:"dedup,omitempty"` // FIFO MessageDeduplicationId
+}
 
 // Admin: expose each declared queue's depth and the data actions the dash/CLI run
 // against the running backend, reusing the JSON-1.0 wire path the Converger uses.
@@ -63,14 +77,38 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 		}
 		return "purged " + resource, nil
 	case "send":
-		if strings.TrimSpace(input) == "" {
-			return "", fmt.Errorf("a message body is required")
-		}
-		if err := sqsCall(ctx, client, "SendMessage",
-			map[string]any{"QueueName": resource, "MessageBody": input}, nil); err != nil {
+		p, err := parseSend(input)
+		if err != nil {
 			return "", err
 		}
-		return "sent 1 message to " + resource, nil
+		if strings.TrimSpace(p.Body) == "" {
+			return "", fmt.Errorf("a message body is required")
+		}
+		payload := map[string]any{"QueueName": resource, "MessageBody": p.Body}
+		if p.Group != "" {
+			payload["MessageGroupId"] = p.Group
+		}
+		if p.Dedup != "" {
+			payload["MessageDeduplicationId"] = p.Dedup
+		}
+		if len(p.Attributes) > 0 {
+			ma := map[string]any{}
+			for k, v := range p.Attributes {
+				ma[k] = map[string]any{"DataType": "String", "StringValue": v}
+			}
+			payload["MessageAttributes"] = ma
+		}
+		if err := sqsCall(ctx, client, "SendMessage", payload, nil); err != nil {
+			return "", err
+		}
+		extra := ""
+		if len(p.Attributes) > 0 {
+			extra = "  ·  attrs " + kvLine(p.Attributes)
+		}
+		if p.Group != "" {
+			extra += "  ·  group " + p.Group
+		}
+		return "sent 1 message to " + resource + extra, nil
 	case "peek":
 		// VisibilityTimeout 0 keeps the messages immediately visible — a true
 		// non-destructive peek rather than a receive that hides them. An optional
@@ -81,12 +119,11 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 			want = n
 		}
 		var r struct {
-			Messages []struct {
-				Body string `json:"Body"`
-			} `json:"Messages"`
+			Messages []message `json:"Messages"`
 		}
 		if err := sqsCall(ctx, client, "ReceiveMessage", map[string]any{
 			"QueueName": resource, "MaxNumberOfMessages": min(want, 10), "VisibilityTimeout": 0,
+			"AttributeNames": []string{"All"}, "MessageAttributeNames": []string{"All"},
 		}, &r); err != nil {
 			return "", err
 		}
@@ -99,6 +136,9 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 		var b strings.Builder
 		for i, m := range r.Messages {
 			fmt.Fprintf(&b, "%d. %s\n", i+1, m.Body)
+			if meta := m.metaLine(); meta != "" {
+				fmt.Fprintf(&b, "   %s\n", meta)
+			}
 		}
 		return strings.TrimRight(b.String(), "\n"), nil
 	}
@@ -175,6 +215,61 @@ func redrive(ctx context.Context, c *http.Client, dlq string, cfg *Config) (stri
 		return dlq + " is empty — nothing to redrive", nil
 	}
 	return fmt.Sprintf("redrove %d message(s) from %s → %s", moved, dlq, source), nil
+}
+
+// message is one received SQS message with its system + user attributes.
+type message struct {
+	Body              string            `json:"Body"`
+	Attributes        map[string]string `json:"Attributes"` // system: MessageGroupId, ApproximateReceiveCount, …
+	MessageAttributes map[string]struct {
+		StringValue string `json:"StringValue"`
+		DataType    string `json:"DataType"`
+	} `json:"MessageAttributes"`
+}
+
+// metaLine renders the compact second line for a peeked message: FIFO group,
+// receive count, and any user message attributes.
+func (m message) metaLine() string {
+	var parts []string
+	if g := m.Attributes["MessageGroupId"]; g != "" {
+		parts = append(parts, "group "+g)
+	}
+	if c := m.Attributes["ApproximateReceiveCount"]; c != "" && c != "1" {
+		parts = append(parts, "received×"+c)
+	}
+	keys := make([]string, 0, len(m.MessageAttributes))
+	for k := range m.MessageAttributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		parts = append(parts, k+"="+m.MessageAttributes[k].StringValue)
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+func parseSend(input string) (sendPayload, error) {
+	if strings.HasPrefix(input, richPrefix) {
+		var p sendPayload
+		if err := json.Unmarshal([]byte(input[len(richPrefix):]), &p); err != nil {
+			return p, fmt.Errorf("bad send payload: %w", err)
+		}
+		return p, nil
+	}
+	return sendPayload{Body: input}, nil
+}
+
+func kvLine(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+m[k])
+	}
+	return strings.Join(parts, " ")
 }
 
 // arnTail returns the resource name from an ARN (the part after the last colon).

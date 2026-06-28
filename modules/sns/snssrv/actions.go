@@ -16,6 +16,7 @@ var dispatch = map[string]func(*server, url.Values, string) (any, *apiError){
 	"Unsubscribe":               (*server).unsubscribe,
 	"ListSubscriptions":         (*server).listSubscriptions,
 	"ListSubscriptionsByTopic":  (*server).listSubscriptionsByTopic,
+	"GetSubscriptionAttributes": (*server).getSubscriptionAttributes,
 	"SetSubscriptionAttributes": (*server).setSubscriptionAttributes,
 	"Publish":                   (*server).publish,
 	"PublishBatch":              (*server).publishBatch,
@@ -199,6 +200,34 @@ func (srv *server) subscriptionList(topic string) (any, *apiError) {
 func (srv *server) setSubscriptionAttributes(form url.Values, _ string) (any, *apiError) {
 	return nil, asErr(srv.store.SetSubscriptionAttribute(
 		form.Get("SubscriptionArn"), form.Get("AttributeName"), form.Get("AttributeValue")))
+}
+func (srv *server) getSubscriptionAttributes(form url.Values, _ string) (any, *apiError) {
+	sub, err := srv.store.GetSubscription(form.Get("SubscriptionArn"))
+	if err != nil {
+		return nil, asErr(err)
+	}
+	pending := "false"
+	if !sub.Confirmed {
+		pending = "true"
+	}
+	var res getTopicAttrsResult // same {Attributes>entry} shape
+	res.Attributes.Entry = []attrEntry{
+		{Key: "SubscriptionArn", Value: sub.ARN},
+		{Key: "TopicArn", Value: sub.TopicARN},
+		{Key: "Protocol", Value: sub.Protocol},
+		{Key: "Endpoint", Value: sub.Endpoint},
+		{Key: "RawMessageDelivery", Value: boolStr(sub.RawDelivery)},
+		{Key: "PendingConfirmation", Value: pending},
+		{Key: "FilterPolicy", Value: sub.FilterPolicy},
+	}
+	return res, nil
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 func (srv *server) publish(form url.Values, _ string) (any, *apiError) {

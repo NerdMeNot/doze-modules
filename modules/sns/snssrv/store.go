@@ -158,6 +158,17 @@ func (s *Store) Subscribe(topicARN, protocol, endpoint string, attrs map[string]
 		if err != nil {
 			return err
 		}
+		// Idempotent by (topic, protocol, endpoint): re-subscribing the same endpoint
+		// reuses the existing subscription's ARN and just refreshes its attributes, so
+		// a re-converge on every boot can't pile up identical subscriptions.
+		_ = b.ForEach(func(_, raw []byte) error {
+			var have Subscription
+			if json.Unmarshal(raw, &have) == nil &&
+				have.TopicARN == topicARN && have.Protocol == protocol && have.Endpoint == endpoint {
+				sub.ARN, sub.Token, sub.Confirmed = have.ARN, have.Token, have.Confirmed
+			}
+			return nil
+		})
 		raw, _ := json.Marshal(sub)
 		return b.Put([]byte(sub.ARN), raw)
 	})
@@ -173,6 +184,20 @@ func applySubAttrs(sub *Subscription, attrs map[string]string) {
 			sub.FilterPolicy = v
 		}
 	}
+}
+
+// GetSubscription returns one subscription by ARN.
+func (s *Store) GetSubscription(arn string) (*Subscription, error) {
+	var sub *Subscription
+	err := s.db.View(func(tx *bolt.Tx) error {
+		got, err := s.getSub(tx, arn)
+		if err != nil {
+			return err
+		}
+		sub = got
+		return nil
+	})
+	return sub, err
 }
 
 func (s *Store) getSub(tx *bolt.Tx, arn string) (*Subscription, error) {

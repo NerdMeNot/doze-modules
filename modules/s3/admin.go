@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -14,13 +15,20 @@ import (
 	"github.com/doze-dev/doze-sdk/engine"
 )
 
-// Admin: expose each declared bucket's object count/size and let the dash/CLI
-// browse or empty it, speaking the standard S3 REST/XML protocol to the backend.
+// richPrefix marks an Admin input as a structured (JSON) payload (the dash
+// composer / inline parser prepend it). Kept in sync with the TUI's console.
+const richPrefix = "\x01"
+
+// Admin: expose each declared bucket's objects and let the dash/CLI browse, read,
+// write, and remove them, speaking the standard S3 REST/XML protocol.
 
 // Actions reports the data operations doze offers for S3 buckets.
 func (Driver) Actions() []engine.Action {
 	return []engine.Action{
 		{ID: "browse", Label: "Browse", Kind: "bucket"},
+		{ID: "get", Label: "Get object", Kind: "bucket", InputHint: "key"},
+		{ID: "put", Label: "Put object", Kind: "bucket", InputHint: "key"},
+		{ID: "rm", Label: "Remove object", Kind: "bucket", InputHint: "key"},
 		{ID: "empty", Label: "Empty", Kind: "bucket", Destructive: true},
 	}
 }
@@ -77,6 +85,33 @@ func (Driver) Run(ctx context.Context, _ engine.Instance, ep engine.Endpoint, ac
 			fmt.Fprintf(&b, "… %d more", len(objs)-shown)
 		}
 		return strings.TrimRight(b.String(), "\n"), nil
+	case "get":
+		key := strings.TrimSpace(input)
+		if key == "" {
+			return "", fmt.Errorf("a key is required: get <key>")
+		}
+		return getObject(ctx, client, resource, key)
+	case "put":
+		p, err := parsePut(input)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(p.Key) == "" {
+			return "", fmt.Errorf("a key is required")
+		}
+		if err := putObject(ctx, client, resource, p.Key, p.Body); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("put %s/%s · %s", resource, p.Key, humanSize(int64(len(p.Body)))), nil
+	case "rm":
+		key := strings.TrimSpace(input)
+		if key == "" {
+			return "", fmt.Errorf("a key is required: rm <key>")
+		}
+		if err := deleteObject(ctx, client, resource, key); err != nil {
+			return "", err
+		}
+		return "removed " + resource + "/" + key, nil
 	case "empty":
 		objs, err := listObjects(ctx, client, resource)
 		if err != nil {
@@ -92,6 +127,78 @@ func (Driver) Run(ctx context.Context, _ engine.Instance, ep engine.Endpoint, ac
 		return fmt.Sprintf("emptied %s — removed %d object(s)", resource, n), nil
 	}
 	return "", fmt.Errorf("unknown s3 action %q", action)
+}
+
+// putPayload is the structured form of a put command.
+type putPayload struct {
+	Key  string `json:"key"`
+	Body string `json:"body"`
+}
+
+func parsePut(input string) (putPayload, error) {
+	if strings.HasPrefix(input, richPrefix) {
+		var p putPayload
+		if err := json.Unmarshal([]byte(input[len(richPrefix):]), &p); err != nil {
+			return p, fmt.Errorf("bad put payload: %w", err)
+		}
+		return p, nil
+	}
+	// Plain "key body": first token is the key, the rest is the body.
+	parts := strings.SplitN(strings.TrimSpace(input), " ", 2)
+	p := putPayload{Key: parts[0]}
+	if len(parts) == 2 {
+		p.Body = parts[1]
+	}
+	return p, nil
+}
+
+// getObject reads an object and returns a header line (key · content-type · size)
+// plus the first chunk of its body.
+func getObject(ctx context.Context, c *http.Client, bucket, key string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/"+bucket+"/"+url.PathEscape(key), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer drain(resp)
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("no such object: %s/%s", bucket, key)
+	}
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("get %s/%s: %s", bucket, key, resp.Status)
+	}
+	const cap = 4096
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, cap+1))
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	head := fmt.Sprintf("%s/%s  ·  %s  ·  %s", bucket, key, ct, humanSize(int64(len(body))))
+	out := head + "\n" + string(body[:min(len(body), cap)])
+	if len(body) > cap {
+		out += "\n… (truncated at " + humanSize(cap) + ")"
+	}
+	return strings.TrimRight(out, "\n"), nil
+}
+
+// putObject writes an object body to a bucket key.
+func putObject(ctx context.Context, c *http.Client, bucket, key, body string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://unix/"+bucket+"/"+url.PathEscape(key), strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer drain(resp)
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("put %s/%s: %s", bucket, key, resp.Status)
+	}
+	return nil
 }
 
 type object struct {

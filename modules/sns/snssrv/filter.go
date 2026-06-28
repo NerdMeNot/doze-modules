@@ -73,3 +73,15 @@ func matchKey(conds []json.RawMessage, value string, present bool) bool {
 	}
 	return false
 }
+
+// MatchPolicy reports whether a message carrying the given string attributes
+// would satisfy a subscription's filter policy. Exported so the admin/CLI can
+// show per-subscription routing without re-implementing the matcher. An empty
+// policy matches everything.
+func MatchPolicy(policyJSON string, attrs map[string]string) bool {
+	m := make(map[string]Attr, len(attrs))
+	for k, v := range attrs {
+		m[k] = Attr{DataType: "String", StringValue: v}
+	}
+	return matchFilter(policyJSON, m)
+}
