@@ -86,6 +86,11 @@ func (Driver) Run(ctx context.Context, _ engine.Instance, ep engine.Endpoint, ac
 		if _, err := snsExec(ctx, client, form); err != nil {
 			return "", err
 		}
+		// A rich (composer) publish wants the routing back as a JSON item list so
+		// the inspector can light each subscription ✓ matched / ✗ filtered.
+		if strings.HasPrefix(input, richPrefix) {
+			return routingJSON(ctx, client, resource, p)
+		}
 		return publishReport(ctx, client, resource, p), nil
 	case "subs":
 		if input == listMarker { // JSON item list for the inspector
@@ -146,6 +151,26 @@ func publishReport(ctx context.Context, c *http.Client, topic string, p publishP
 		head += "  ·  attrs " + kvLine(p.Attributes)
 	}
 	return head + "\n" + strings.TrimRight(b.String(), "\n")
+}
+
+// routingJSON publishes' companion to the subs listing: the same subscription
+// items, each annotated with whether THIS publish's attributes matched its filter
+// policy — so the inspector can show the routing of the event you just sent.
+func routingJSON(ctx context.Context, c *http.Client, topic string, p publishPayload) (string, error) {
+	subs, err := listSubs(ctx, c, topic)
+	if err != nil {
+		return "", err
+	}
+	items := make([]map[string]any, 0, len(subs))
+	for _, s := range subs {
+		items = append(items, map[string]any{
+			"protocol": s.Protocol, "endpoint": shortEndpoint(s.Endpoint),
+			"filter": prettyFilter(s.FilterPolicy), "raw": s.Raw, "confirmed": !s.Pending,
+			"matched": snssrv.MatchPolicy(s.FilterPolicy, p.Attributes),
+		})
+	}
+	b, _ := json.Marshal(items)
+	return string(b), nil
 }
 
 // subsReport renders the topic's subscriptions with protocol, endpoint, filter
