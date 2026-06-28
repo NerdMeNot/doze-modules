@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/doze-dev/doze-modules/awslocal"
@@ -72,16 +73,25 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 		return "sent 1 message to " + resource, nil
 	case "peek":
 		// VisibilityTimeout 0 keeps the messages immediately visible — a true
-		// non-destructive peek rather than a receive that hides them.
+		// non-destructive peek rather than a receive that hides them. An optional
+		// numeric input is how many to show (`peek 5`); SQS caps a single receive at
+		// 10, so larger asks are clamped.
+		want := 10
+		if n, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && n > 0 {
+			want = n
+		}
 		var r struct {
 			Messages []struct {
 				Body string `json:"Body"`
 			} `json:"Messages"`
 		}
 		if err := sqsCall(ctx, client, "ReceiveMessage", map[string]any{
-			"QueueName": resource, "MaxNumberOfMessages": 10, "VisibilityTimeout": 0,
+			"QueueName": resource, "MaxNumberOfMessages": min(want, 10), "VisibilityTimeout": 0,
 		}, &r); err != nil {
 			return "", err
+		}
+		if want < len(r.Messages) {
+			r.Messages = r.Messages[:want]
 		}
 		if len(r.Messages) == 0 {
 			return "(no visible messages)", nil

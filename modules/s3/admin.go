@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/doze-dev/doze-modules/awslocal"
@@ -52,7 +53,7 @@ func (Driver) Resources(ctx context.Context, inst engine.Instance, ep engine.End
 }
 
 // Run performs an S3 data action and returns a human result line.
-func (Driver) Run(ctx context.Context, _ engine.Instance, ep engine.Endpoint, action, resource, _ string) (string, error) {
+func (Driver) Run(ctx context.Context, _ engine.Instance, ep engine.Endpoint, action, resource, input string) (string, error) {
 	client := awslocal.UnixHTTPClient(ep.Backend)
 	switch action {
 	case "browse":
@@ -63,9 +64,17 @@ func (Driver) Run(ctx context.Context, _ engine.Instance, ep engine.Endpoint, ac
 		if len(objs) == 0 {
 			return "(empty)", nil
 		}
+		// An optional numeric input limits how many keys to list (`browse 20`).
+		shown := len(objs)
+		if n, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && n > 0 && n < shown {
+			shown = n
+		}
 		var b strings.Builder
-		for _, o := range objs {
+		for _, o := range objs[:shown] {
 			fmt.Fprintf(&b, "%s  %s\n", o.Key, humanSize(o.Size))
+		}
+		if shown < len(objs) {
+			fmt.Fprintf(&b, "… %d more", len(objs)-shown)
 		}
 		return strings.TrimRight(b.String(), "\n"), nil
 	case "empty":
