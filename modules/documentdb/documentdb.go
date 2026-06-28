@@ -165,11 +165,22 @@ func (Driver) Plan(_ context.Context, inst engine.Instance, tc engine.Toolchain)
 			Target: fmt.Sprintf("%s -h %s -p %d -d postgres", tc.Path("pg_isready"), pgSock, port),
 		},
 		// Install the DocumentDB extension chain once Postgres is ready, before
-		// FerretDB connects.
-		Hooks: []string{fmt.Sprintf(
-			`%s -h %s -p %d -U postgres -d postgres -v ON_ERROR_STOP=1 -X -q -c "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"`,
-			tc.Path("psql"), pgSock, port,
-		)},
+		// FerretDB connects — then tame its pg_cron maintenance schedule.
+		Hooks: []string{
+			fmt.Sprintf(
+				`%s -h %s -p %d -U postgres -d postgres -v ON_ERROR_STOP=1 -X -q -c "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"`,
+				tc.Path("psql"), pgSock, port,
+			),
+			// DocumentDB schedules build_index_concurrently every 2 seconds. Those
+			// jobs hit "job startup timeout" in this single-node dev cluster, and at a
+			// 2s cadence the pg_cron launcher busy-spins retrying them — pinning a CPU
+			// at idle. Index creation itself is synchronous and unaffected, so slow the
+			// background sweep to once a minute (idempotent; only rewrites the 2s rows).
+			fmt.Sprintf(
+				`%s -h %s -p %d -U postgres -d postgres -X -q -c "UPDATE cron.job SET schedule = '* * * * *' WHERE command LIKE '%%build_index_concurrently%%' AND schedule = '2 seconds';"`,
+				tc.Path("psql"), pgSock, port,
+			),
+		},
 	}
 	ferretdb := engine.SpawnSpec{
 		Name:  "ferretdb",
