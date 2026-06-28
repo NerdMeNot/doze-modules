@@ -171,13 +171,17 @@ func (Driver) Plan(_ context.Context, inst engine.Instance, tc engine.Toolchain)
 				`%s -h %s -p %d -U postgres -d postgres -v ON_ERROR_STOP=1 -X -q -c "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"`,
 				tc.Path("psql"), pgSock, port,
 			),
-			// DocumentDB schedules build_index_concurrently every 2 seconds. Those
-			// jobs hit "job startup timeout" in this single-node dev cluster, and at a
-			// 2s cadence the pg_cron launcher busy-spins retrying them — pinning a CPU
-			// at idle. Index creation itself is synchronous and unaffected, so slow the
-			// background sweep to once a minute (idempotent; only rewrites the 2s rows).
+			// DocumentDB schedules pg_cron maintenance jobs (build_index_concurrently
+			// every 2s, plus per-minute delete_expired_rows/cursor cleanup). In this
+			// single-node dev cluster pg_cron cannot start their dynamic background
+			// workers — every run hits "job startup timeout" — so the launcher busy-
+			// spins retrying and pins a CPU at idle (≈99% at the 2s cadence). The jobs
+			// deliver nothing while failing, and createIndex / normal Mongo ops run
+			// synchronously and are unaffected — so disable the maintenance jobs
+			// outright. Idempotent; runs on every boot (the cloned template re-enables
+			// them). Re-enable upstream once dynamic bg-worker startup is sorted out.
 			fmt.Sprintf(
-				`%s -h %s -p %d -U postgres -d postgres -X -q -c "UPDATE cron.job SET schedule = '* * * * *' WHERE command LIKE '%%build_index_concurrently%%' AND schedule = '2 seconds';"`,
+				`%s -h %s -p %d -U postgres -d postgres -X -q -c "UPDATE cron.job SET active = false WHERE command LIKE '%%documentdb_api_internal%%';"`,
 				tc.Path("psql"), pgSock, port,
 			),
 		},
