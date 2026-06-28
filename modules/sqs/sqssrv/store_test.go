@@ -18,6 +18,43 @@ func testStore(t *testing.T) *Store {
 	return newStore(db)
 }
 
+func TestPeekShowsAllFifoMessagesReadOnly(t *testing.T) {
+	s := testStore(t)
+	if _, err := s.CreateQueue("orders.fifo", map[string]string{"FifoQueue": "true"}); err != nil {
+		t.Fatal(err)
+	}
+	// Two messages in one group, one in another — a plain Receive would only return
+	// the head of each group (2), but Peek must show all 3.
+	for _, m := range []struct{ body, group, dedup string }{
+		{"a1", "g1", "d1"}, {"a2", "g1", "d2"}, {"b1", "g2", "d3"},
+	} {
+		if _, err := s.Send("orders.fifo", m.body, nil, -1, m.group, m.dedup); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Peek shows the whole queue in order — all 3, not just the 2 group heads a
+	// plain Receive would release.
+	peeked, err := s.Peek("orders.fifo", 100)
+	if err != nil || len(peeked) != 3 {
+		t.Fatalf("Peek: err=%v n=%d, want 3", err, len(peeked))
+	}
+	if peeked[0].Body != "a1" || peeked[1].Body != "a2" || peeked[2].Body != "b1" {
+		t.Fatalf("Peek order = %q,%q,%q", peeked[0].Body, peeked[1].Body, peeked[2].Body)
+	}
+	// Peek is read-only: repeated peeks never bump the receive count.
+	_, _ = s.Peek("orders.fifo", 100)
+	again, _ := s.Peek("orders.fifo", 100)
+	for _, m := range again {
+		if m.ReceiveCount != 0 {
+			t.Fatalf("Peek bumped receive count for %q: %d, want 0", m.Body, m.ReceiveCount)
+		}
+	}
+	// Contrast: a real Receive only releases the group heads (2).
+	if got, _ := s.Receive("orders.fifo", 10, 0, -1); len(got) != 2 {
+		t.Fatalf("Receive returned %d FIFO heads, want 2", len(got))
+	}
+}
+
 func TestSendReceiveDeleteVisibility(t *testing.T) {
 	s := testStore(t)
 	if _, err := s.CreateQueue("q", map[string]string{"VisibilityTimeout": "1"}); err != nil {

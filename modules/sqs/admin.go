@@ -132,26 +132,25 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 		}
 		return "deleted 1 message from " + resource, nil
 	case "peek":
-		// VisibilityTimeout 0 keeps the messages immediately visible — a true
-		// non-destructive peek rather than a receive that hides them.
+		// DozePeek is a read-only snapshot: it returns the full visible contents
+		// (every message, not just the head of each FIFO group) and never consumes,
+		// hides, or bumps the receive count — so the inspector matches the depth and
+		// repeated refreshes don't look like consumption.
 		structured := input == listMarker
 		want := 10
-		if !structured {
-			if n, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && n > 0 {
-				want = n // `peek 5` (text mode)
-			}
+		if structured {
+			want = 500 // the inspector wants the whole queue, not a single page
+		} else if n, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && n > 0 {
+			want = n // `peek 5` (text mode)
 		}
 		var r struct {
 			Messages []message `json:"Messages"`
 		}
-		if err := sqsCall(ctx, client, "ReceiveMessage", map[string]any{
-			"QueueName": resource, "MaxNumberOfMessages": min(want, 10), "VisibilityTimeout": 0,
+		if err := sqsCall(ctx, client, "DozePeek", map[string]any{
+			"QueueName": resource, "MaxNumberOfMessages": want,
 			"AttributeNames": []string{"All"}, "MessageAttributeNames": []string{"All"},
 		}, &r); err != nil {
 			return "", err
-		}
-		if want < len(r.Messages) {
-			r.Messages = r.Messages[:want]
 		}
 		if structured { // JSON item list for the inspector
 			items := make([]item, 0, len(r.Messages))

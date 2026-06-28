@@ -497,6 +497,48 @@ func (s *Store) receiveOnce(queue string, max, visibilityOverride int) (out []Me
 	return out, nextVisible, err
 }
 
+// Peek returns up to max currently-visible messages in queue (FIFO) order WITHOUT
+// consuming them: it never changes visibility, never increments the receive count,
+// and ignores FIFO group locking — so it shows the FULL queue contents (every
+// message, not just the head of each message group, the way a plain Receive does).
+// Purely read-only; the returned handles are still valid for Delete.
+func (s *Store) Peek(queue string, max int) ([]Message, error) {
+	if max <= 0 {
+		max = 10
+	}
+	var out []Message
+	err := s.db.View(func(tx *bolt.Tx) error {
+		q, err := s.getQueue(tx, queue)
+		if err != nil {
+			return err
+		}
+		mb := tx.Bucket(msgBucket(queue))
+		if mb == nil {
+			return nil
+		}
+		now := s.now()
+		nowN := now.UnixNano()
+		c := mb.Cursor()
+		for k, raw := c.First(); k != nil && len(out) < max; k, raw = c.Next() {
+			var m Message
+			if json.Unmarshal(raw, &m) != nil {
+				continue
+			}
+			// Match ApproximateNumberOfMessages (visible depth): skip in-flight and
+			// retention-expired messages, but show everything else regardless of group.
+			if m.VisibleAt > nowN {
+				continue
+			}
+			if q.RetentionPeriod > 0 && now.Sub(time.Unix(0, m.Sent)) > time.Duration(q.RetentionPeriod)*time.Second {
+				continue
+			}
+			out = append(out, m)
+		}
+		return nil
+	})
+	return out, err
+}
+
 func (s *Store) moveToDLQ(tx *bolt.Tx, dlq string, m *Message) error {
 	if _, err := s.getQueue(tx, dlq); err != nil {
 		return nil // DLQ gone; drop silently rather than block the source queue

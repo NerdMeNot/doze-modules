@@ -24,6 +24,7 @@ var handlers = map[string]handler{
 	"DeleteMessageBatch":      hDeleteMessageBatch,
 	"ChangeMessageVisibility": hChangeMessageVisibility,
 	"PurgeQueue":              hPurgeQueue,
+	"DozePeek":                hDozePeek, // non-AWS: read-only inspector peek
 }
 
 func queueURL(host, name string) string {
@@ -158,6 +159,35 @@ func hReceiveMessage(s *Store, req *request) (any, *apiError) {
 	maNames := req.p.messageAttributeNames()
 
 	msgs, err := s.Receive(queue, max, wait, vis)
+	if err != nil {
+		return nil, asAPIError(err)
+	}
+	var res receiveResult
+	for _, m := range msgs {
+		mv := msgView{MessageID: m.ID, ReceiptHandle: m.Handle(), MD5OfBody: m.MD5Body, Body: m.Body}
+		if sa := systemAttrs(m, attrNames); len(sa) > 0 {
+			mv.Attributes = sa
+		}
+		if ma := filterAttrs(m.Attrs, maNames); len(ma) > 0 {
+			mv.MessageAttributes = ma
+			mv.MD5OfMessageAttributes = md5Attributes(map[string]Attr(ma))
+		}
+		res.Messages = append(res.Messages, mv)
+	}
+	return res, nil
+}
+
+// hDozePeek is doze's non-AWS read-only peek: it returns the queue's full visible
+// contents (every message, not just FIFO group heads) without consuming, hiding,
+// or bumping the receive count — so the dash inspector matches the queue depth and
+// repeated refreshes don't look like consumption.
+func hDozePeek(s *Store, req *request) (any, *apiError) {
+	queue := targetQueue(req)
+	max := req.p.intDefault("MaxNumberOfMessages", 10)
+	attrNames := req.p.attributeNames()
+	maNames := req.p.messageAttributeNames()
+
+	msgs, err := s.Peek(queue, max)
 	if err != nil {
 		return nil, asAPIError(err)
 	}
