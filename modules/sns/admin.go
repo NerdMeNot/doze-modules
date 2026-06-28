@@ -21,6 +21,10 @@ import (
 // with the TUI's console richPrefix.
 const richPrefix = "\x01"
 
+// listMarker, as the Admin input, asks a read action for a JSON item list (for
+// the dash's navigable inspector) instead of the human text rendering.
+const listMarker = "\x01list"
+
 // Admin exposes each topic's subscriptions and lets the dash/CLI publish — with
 // message attributes and a subject — and see exactly which subscriptions the
 // attributes route to under their filter policies.
@@ -84,6 +88,21 @@ func (Driver) Run(ctx context.Context, _ engine.Instance, ep engine.Endpoint, ac
 		}
 		return publishReport(ctx, client, resource, p), nil
 	case "subs":
+		if input == listMarker { // JSON item list for the inspector
+			subs, err := listSubs(ctx, client, resource)
+			if err != nil {
+				return "", err
+			}
+			items := make([]map[string]any, 0, len(subs))
+			for _, s := range subs {
+				items = append(items, map[string]any{
+					"protocol": s.Protocol, "endpoint": shortEndpoint(s.Endpoint),
+					"filter": prettyFilter(s.FilterPolicy), "raw": s.Raw, "confirmed": !s.Pending,
+				})
+			}
+			b, _ := json.Marshal(items)
+			return string(b), nil
+		}
 		return subsReport(ctx, client, resource)
 	}
 	return "", fmt.Errorf("unknown sns action %q", action)

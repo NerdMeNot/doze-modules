@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/doze-dev/doze-modules/awslocal"
 	"github.com/doze-dev/doze-sdk/engine"
@@ -19,6 +20,10 @@ import (
 // composer / inline parser prepend it); a plain string is just the body. Kept in
 // sync with the TUI's console richPrefix.
 const richPrefix = "\x01"
+
+// listMarker, as the Admin input, asks a read action for a JSON item list (for
+// the dash's navigable inspector) instead of the human text rendering.
+const listMarker = "\x01list"
 
 // sendPayload is the structured form of a send command.
 type sendPayload struct {
@@ -84,12 +89,20 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 		if strings.TrimSpace(p.Body) == "" {
 			return "", fmt.Errorf("a message body is required")
 		}
+		fifo := strings.HasSuffix(resource, ".fifo")
+		if fifo && p.Group == "" {
+			return "", fmt.Errorf("%s is a FIFO queue — a message group is required (send … group=<id>, or use the composer)", resource)
+		}
 		payload := map[string]any{"QueueName": resource, "MessageBody": p.Body}
 		if p.Group != "" {
 			payload["MessageGroupId"] = p.Group
 		}
-		if p.Dedup != "" {
+		switch {
+		case p.Dedup != "":
 			payload["MessageDeduplicationId"] = p.Dedup
+		case fifo:
+			// FIFO needs a dedup id; mint a unique one so repeated sends aren't dropped.
+			payload["MessageDeduplicationId"] = fmt.Sprintf("dash-%d", time.Now().UnixNano())
 		}
 		if len(p.Attributes) > 0 {
 			ma := map[string]any{}
@@ -109,14 +122,24 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 			extra += "  ·  group " + p.Group
 		}
 		return "sent 1 message to " + resource + extra, nil
+	case "del":
+		if strings.TrimSpace(input) == "" {
+			return "", fmt.Errorf("a receipt handle is required")
+		}
+		if err := sqsCall(ctx, client, "DeleteMessage",
+			map[string]any{"QueueName": resource, "ReceiptHandle": input}, nil); err != nil {
+			return "", err
+		}
+		return "deleted 1 message from " + resource, nil
 	case "peek":
 		// VisibilityTimeout 0 keeps the messages immediately visible — a true
-		// non-destructive peek rather than a receive that hides them. An optional
-		// numeric input is how many to show (`peek 5`); SQS caps a single receive at
-		// 10, so larger asks are clamped.
+		// non-destructive peek rather than a receive that hides them.
+		structured := input == listMarker
 		want := 10
-		if n, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && n > 0 {
-			want = n
+		if !structured {
+			if n, err := strconv.Atoi(strings.TrimSpace(input)); err == nil && n > 0 {
+				want = n // `peek 5` (text mode)
+			}
 		}
 		var r struct {
 			Messages []message `json:"Messages"`
@@ -129,6 +152,14 @@ func (Driver) Run(ctx context.Context, inst engine.Instance, ep engine.Endpoint,
 		}
 		if want < len(r.Messages) {
 			r.Messages = r.Messages[:want]
+		}
+		if structured { // JSON item list for the inspector
+			items := make([]item, 0, len(r.Messages))
+			for _, m := range r.Messages {
+				items = append(items, m.item())
+			}
+			b, _ := json.Marshal(items)
+			return string(b), nil
 		}
 		if len(r.Messages) == 0 {
 			return "(no visible messages)", nil
@@ -220,11 +251,32 @@ func redrive(ctx context.Context, c *http.Client, dlq string, cfg *Config) (stri
 // message is one received SQS message with its system + user attributes.
 type message struct {
 	Body              string            `json:"Body"`
+	ReceiptHandle     string            `json:"ReceiptHandle"`
 	Attributes        map[string]string `json:"Attributes"` // system: MessageGroupId, ApproximateReceiveCount, …
 	MessageAttributes map[string]struct {
 		StringValue string `json:"StringValue"`
 		DataType    string `json:"DataType"`
 	} `json:"MessageAttributes"`
+}
+
+// item is the flattened, dash-facing JSON shape for one message in the inspector.
+type item struct {
+	Body     string            `json:"body"`
+	Group    string            `json:"group,omitempty"`
+	Received string            `json:"received,omitempty"`
+	Attrs    map[string]string `json:"attrs,omitempty"`
+	Handle   string            `json:"handle"`
+}
+
+func (m message) item() item {
+	it := item{Body: m.Body, Handle: m.ReceiptHandle, Group: m.Attributes["MessageGroupId"], Received: m.Attributes["ApproximateReceiveCount"]}
+	if len(m.MessageAttributes) > 0 {
+		it.Attrs = map[string]string{}
+		for k, v := range m.MessageAttributes {
+			it.Attrs[k] = v.StringValue
+		}
+	}
+	return it
 }
 
 // metaLine renders the compact second line for a peeked message: FIFO group,

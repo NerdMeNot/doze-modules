@@ -19,6 +19,10 @@ import (
 // composer / inline parser prepend it). Kept in sync with the TUI's console.
 const richPrefix = "\x01"
 
+// listMarker, as the Admin input, asks a read action for a JSON item list (for
+// the dash's navigable inspector) instead of the human text rendering.
+const listMarker = "\x01list"
+
 // Admin: expose each declared bucket's objects and let the dash/CLI browse, read,
 // write, and remove them, speaking the standard S3 REST/XML protocol.
 
@@ -68,6 +72,14 @@ func (Driver) Run(ctx context.Context, _ engine.Instance, ep engine.Endpoint, ac
 		objs, err := listObjects(ctx, client, resource)
 		if err != nil {
 			return "", err
+		}
+		if input == listMarker { // JSON item list for the inspector
+			items := make([]map[string]any, 0, len(objs))
+			for _, o := range objs {
+				items = append(items, map[string]any{"key": o.Key, "size": o.Size, "modified": o.LastModified})
+			}
+			b, _ := json.Marshal(items)
+			return string(b), nil
 		}
 		if len(objs) == 0 {
 			return "(empty)", nil
@@ -202,8 +214,9 @@ func putObject(ctx context.Context, c *http.Client, bucket, key, body string) er
 }
 
 type object struct {
-	Key  string `xml:"Key"`
-	Size int64  `xml:"Size"`
+	Key          string `xml:"Key"`
+	Size         int64  `xml:"Size"`
+	LastModified string `xml:"LastModified"`
 }
 
 // listObjects returns a bucket's objects via ListObjectsV2 (XML).
